@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+
+##
+## EPITECH PROJECT, 2025
+## G-CNA-500-PAR-5-1-neuralnetwork-4
+## File description:
+## Simplified neural network generator using modular components
+##
+
+import sys
+import os
+import json
+import random
+from src.network_init import init_network, ACTIVATION, LEAKYRELU
+from src.genetic_algorithm import SIZE_GENERATION, select_next_gen, select_best_parents
+from src.neuron_network import Neuron_Network, Activation
+from src.training import (Training_Session, init_weight_deltas, init_bias_deltas,
+                          train_neural_network, experiment_accuracy)
+
+SUCCESS = 0
+ERROR = 84
+FAILURE = -1
+
+HELP_FLAG = "--help"
+WRITE = "w"
+READ = "r"
+
+NB_EPOCH = 15
+NB_GENERATION = 6
+ACCEPTABLE_RATE = 60.00
+SAVABLE_RATE = 80.00
+MIN_GENERATION = 1
+
+CONF_EXTENSION = ".conf"
+NEURAL_NETWORK_EXTENSION = ".nn"
+
+INDENTATION = 4
+
+HELP_ASKED = 2
+MINIMAL_ARGS = 3
+
+class Hyperparameters:
+    def __init__(self, nb_layers: int, neurons_per_layer: list[int],
+            activations: list[Activation], lr: float):
+        self.lr: float = lr
+        self.nb_layers: int = nb_layers
+        self.activations: list[Activation] = activations
+        self.neurons_per_layer: list[int] = neurons_per_layer
+        
+
+class Conf:
+    def __init__(self, option: str, params: Hyperparameters | str):
+        self.option: str = option
+        self.params: Hyperparameters | str = params
+
+def help():
+    print("USAGE\n\t./my_torch_generator config_file_1 nb_1 [config_file_2 nb_2"
+          "...]\nDESCRIPTION\n\tconfig_file_i Configuration file containing "
+          "description of a neural network we want to generate.\n\t"
+          "nb_i Number of neural networks to generate based on"
+          "the configuration file.")
+
+def save_neuron_network(network: Neuron_Network, path: str):
+    try:
+        data = network.to_dict()
+        with open(path, WRITE) as file:
+            json.dump(data, file, indent=INDENTATION)
+        return True
+    except Exception as e:
+        print(f"Error: Failed to write JSON to file. {e}")
+        sys.exit(ERROR)
+
+def network_saving(network: Neuron_Network, epoch: int, iteration: int, id_nn: int):
+    if (network.fitness > SAVABLE_RATE or epoch + 1 == NB_EPOCH):
+        save_file: str = f"my_torch_network_{str(iteration)}_{id_nn}_{(network.fitness):.2f}{NEURAL_NETWORK_EXTENSION}"
+        save_neuron_network(network, save_file)
+
+def serial_training(iteration: int, content: list[str], network: Neuron_Network, id_nn: int):
+
+    training: Training_Session
+    
+    for epoch in range(NB_EPOCH):
+        print(f"Epoch {epoch + 1}/{NB_EPOCH}")
+        random.shuffle(content)  # Shuffle data at each epoch
+        split_index = int(len(content) * 0.9)
+        train_lines = content[:split_index]
+        val_lines = content[split_index:]
+        acc_wgt_dt = init_weight_deltas(network)
+        acc_bias_dt = init_bias_deltas(network)
+        training = Training_Session(0, network, acc_wgt_dt, acc_bias_dt)
+        training = train_neural_network(train_lines, training)
+        print(f"_ _ _\n\nTraining finished")
+        network.fitness = experiment_accuracy(val_lines, network)
+        print(f"\nEpoch finished\n_ _ _\n")
+        training.total_loss = 0
+        network_saving(network, epoch, iteration, id_nn)
+        if epoch == 5 and network.fitness < 25.0:
+            print(f"   [X] Trop lent au démarrage ({network.fitness:.2f}%) -> POUBELLE")
+            break
+        if epoch == 12 and network.fitness < 40.0:
+             print(f"   [X] Pas assez performant ({network.fitness:.2f}%) -> POUBELLE")
+             break
+    return training.network
+
+def genetic_algorithm(iteration: int, content: list[str]):
+    networks: list[Neuron_Network] = [init_network() for _ in range(SIZE_GENERATION)]
+    generations: list[Neuron_Network] = []
+
+    for gen in range(NB_GENERATION):
+        print(f"Generation {gen + 1}/{NB_GENERATION}:")
+        for id, network in enumerate(networks):
+            print(f"Network {id + 1}/{len(networks)}:")
+            print(f"- (Infos) - Network:")
+            print(f"| Learning rate: {network.learning_rate}")
+            print(f"| Nb layers: {len(network.layers)}")
+            for l, layer in enumerate(network.layers):
+                print(f"| Nb neurons on layer n'{l + 1}: {len(layer.neurons)}")
+            print(f"|_______________________________")
+            network = serial_training(iteration, content, network, id + 1)
+        generations += networks
+        generations = select_best_parents(generations)
+        networks = select_next_gen(generations)
+    return max(networks, key=lambda net: net.fitness)
+
+def get_config_file_content(content: dict) -> Conf:
+    
+    option = content.get("option")
+    if option == "random":
+        training_file = content.get("training_file")
+        if training_file is None:
+            raise RuntimeError("Missing training_file for random option")
+        return Conf(option="random", params=training_file)
+
+    elif option == "chosen":
+        hp = content.get("hyperparameters")
+        if hp is None:
+            raise RuntimeError("Missing hyperparameters")
+        layers_conf = hp.get("layers", [])
+        neurons_per_layer : list[int] = []
+        activations = []
+        for layer in layers_conf:
+            neurons_per_layer.append(layer["nb_neurons"])
+            act_name = layer["activation"]
+            if act_name == "LeakyReLu":
+                activations.append(ACTIVATION[LEAKYRELU])
+            else:
+                raise RuntimeError(f"Unknown activation: {act_name}")
+        lr = hp.get("learning_rate")
+        if lr is None:
+            raise RuntimeError("Missing learning_rate")
+
+        activations.append(None)
+        hyperparams : Hyperparameters = Hyperparameters(
+            nb_layers=len(neurons_per_layer) + 1,
+            neurons_per_layer=neurons_per_layer,
+            activations=activations,
+            lr=lr
+        )
+        return Conf(option="chosen", params=hyperparams)
+    else:
+        raise RuntimeError(f"Unknown option: {option}")
+
+def generate_neural_network(filename: str, to_generate: int):
+
+    try:
+        with open(filename, READ) as file:
+            content = json.load(file)
+    except FileNotFoundError:
+        raise RuntimeError("Unexistent file")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"invalid JSON : {e}")
+    conf: Conf = get_config_file_content(content)
+    if (conf is None):
+        raise RuntimeError("Error: invalid configuration file")
+    if (conf.option == "random"):
+        try:
+            with open(conf.params, READ) as f:
+                train_data = f.readlines()
+        except FileNotFoundError:
+            raise RuntimeError("Unexistent file")
+        for iteration in range(to_generate):
+            network: Neuron_Network = genetic_algorithm(iteration, train_data)
+            save_neuron_network(network, f"my_torch_network_{iteration}_{network.fitness:.2f}.nn")
+            print("Saved best Network !")
+        return SUCCESS
+    if (conf.option == "chosen" and conf.params is not None):
+        try:
+            training_file = content.get("training_file")
+            if training_file is None:
+                raise RuntimeError("Missing training_file for chosen option")
+            with open(training_file, READ) as f:
+                train_data = f.readlines()
+        except FileNotFoundError:
+            raise RuntimeError("Unexistent training file")
+        for iteration in range(to_generate):
+            network: Neuron_Network = init_network(conf.params.nb_layers,
+                conf.params.neurons_per_layer, conf.params.activations, conf.params.lr)
+            print(f"\nTraining network {iteration + 1}/{to_generate}:")
+            print(f"| Learning rate: {network.learning_rate}")
+            print(f"| Nb layers: {len(network.layers)}")
+            for l, layer in enumerate(network.layers):
+                print(f"| Nb neurons on layer n'{l + 1}: {len(layer.neurons)}")
+            print(f"|_______________________________")
+            network = serial_training(iteration, train_data, network, iteration + 1)
+            save_neuron_network(network, f"my_torch_network_{iteration}_{network.fitness:.2f}.nn")
+            print("Saved Network !")
+        return SUCCESS
+
+    return ERROR
+
+def wrong_arguments(should_be_config, arg):
+    if ((should_be_config and (arg.find(CONF_EXTENSION) == FAILURE or not os.path.exists(arg)))
+        or (not should_be_config and (not arg.isnumeric() or int(arg) < MIN_GENERATION))):
+        return True
+    return False
+
+def main():
+
+    should_be_config: bool = True
+    nb_args: int = len(sys.argv)
+
+    if (nb_args == HELP_ASKED and sys.argv[1] == HELP_FLAG):
+        return help()
+
+    if (nb_args < MINIMAL_ARGS):
+        print("Not enough arguments. Try --help for more informations")
+        return ERROR
+
+    for i in range(1, len(sys.argv)):
+        if (wrong_arguments(should_be_config, sys.argv[i])):
+            return ERROR
+        should_be_config = True if sys.argv[i].isnumeric() else False
+
+    if (not should_be_config):
+        return ERROR
+
+    for i in range(1, len(sys.argv), 2):
+        err = generate_neural_network(
+            sys.argv[i], int(sys.argv[i + 1]))
+        if (err == ERROR):
+            return ERROR
+    return SUCCESS
+
+if (__name__ == "__main__"):
+    sys.exit(main())

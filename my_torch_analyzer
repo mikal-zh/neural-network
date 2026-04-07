@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+
+import sys
+from src.parser_nn import Parser_nn
+from src.training import train_on_data, predict
+from src.fen_utils import load_inputs
+
+SUCCESS = 0
+ERROR = 84
+HELP_FLAG = "--help"
+PREDICT_FLAG = "--predict"
+TRAIN_FLAG = "--train"
+SAVE_FLAG = "--save"
+
+output_classes = [
+    "Nothing",
+    "Checkmate White",
+    "Checkmate Black",
+    "Check White",
+    "Check Black"
+]
+
+def print_error(msg):
+    print(f"Error: {msg}", file=sys.stderr)
+
+def help():
+    print("USAGE\n"
+            "\t./my_torch_analyzer [--predict | --train [--save SAVEFILE]] LOADFILE CHESSFILE\n\n"
+            "DESCRIPTION\n"
+            "\t--train Launch the neural network in training mode.\n\t\tEach chessboard in FILE must "
+            "contain inputs to send to the neural network in FEN notation and the expected output "
+            "separated by space.\n\t\tIf specified, the newly trained neural network will be saved in "
+            "SAVEFILE.\n\t\tOtherwise, it will be saved in the original LOADFILE.\n"
+            "\t--predict Launch the neural network in prediction mode. Each chessboard in FILE must "
+            "contain inputs to send to the neural network in FEN notation, and optionally an expected "
+            "output.\n"
+            "\t--save Save neural network into SAVEFILE. Only works in train mode.\n\n"
+            "LOADFILE File containing an artificial neural network\n"
+            "CHESSFILE File containing chessboards")
+    return SUCCESS
+
+def predict_mode(loadfile: Parser_nn, chessfile):
+    try:
+        with open(chessfile, 'r') as file:
+            lines = [line.strip() for line in file if line.strip()]
+
+        total_checked = 0
+        correct_predictions = 0
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 6:
+                print("Nothing")
+                continue
+            fen = ' '.join(parts[:6]) + ' '
+            inputs = load_inputs(fen)
+            raw_outputs = predict(loadfile.network, inputs)
+            max_index = raw_outputs.index(max(raw_outputs))
+            prediction = output_classes[max_index] if max_index < len(output_classes) else "Nothing"
+            if len(parts) > 6:
+                expected = ' '.join(parts[6:])
+                print(prediction)
+                if prediction == expected:
+                    correct_predictions += 1
+                total_checked += 1
+            else:
+                print(prediction)
+        if total_checked > 0:
+            accuracy = (correct_predictions / total_checked) * 100
+            print_error(f"________________________")
+            print_error(f"Accuracy: {accuracy:.2f}% ({correct_predictions}/{total_checked})")
+            print_error(f"________________________")
+
+        return SUCCESS
+    except Exception as e:
+        print_error(f"Prediction failed: {e}")
+        return ERROR
+
+def train_mode(loadfile :Parser_nn, chessfile, savefile=None, original_loadfile=None):
+    try:
+        with open(chessfile, 'r') as file:
+            lines = file.readlines()
+        forced_epochs = 15
+        old_lr = loadfile.network.learning_rate
+        loadfile.network.learning_rate = old_lr * 0.5
+
+        print_error(f"--- TRAINING STARTED ---")
+        print_error(f"Positions: {len(lines)} | Epochs: {forced_epochs}")
+        print_error(f"Fine Tuning: LR {old_lr:.5f} -> {loadfile.network.learning_rate:.5f}")
+
+        trained_network = train_on_data(loadfile.network, lines, nb_epochs=forced_epochs)
+        loadfile.network = trained_network
+
+        target_file = savefile if savefile else original_loadfile
+        if target_file:
+            base_name = target_file
+            if target_file.endswith('.nn'):
+                base_name = target_file[:-3]
+            final_file = f"{base_name}_{loadfile.network.fitness:.2f}.nn"
+            loadfile.save_to_file(final_file)
+        else:
+            print_error("No file specified to save the network.")
+            return ERROR
+        return SUCCESS
+    except Exception as e:
+        print_error(f"Training failed: {e}")
+        return ERROR
+
+def main():
+    if len(sys.argv) < 2:
+        print_error("Missing arguments. Try --help")
+        return ERROR
+    if sys.argv[1] == HELP_FLAG:
+        return help()
+    mode = None
+    loadfile = None
+    chessfile = None
+    savefile = None
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg == PREDICT_FLAG:
+            mode = "predict"
+            i += 1
+        elif arg == TRAIN_FLAG:
+            mode = "train"
+            i += 1
+        elif arg == SAVE_FLAG:
+            if i + 1 < len(sys.argv):
+                savefile = sys.argv[i + 1]
+                i += 2
+            else:
+                print_error("Option --save requires a filename")
+                return ERROR
+        else:
+            if loadfile is None:
+                loadfile = arg
+                i += 1
+            elif chessfile is None:
+                chessfile = arg
+                i += 1
+            else:
+                print_error(f"Unexpected argument '{arg}'")
+                return ERROR
+    if mode is None:
+        print_error("No mode selected (--train or --predict)")
+        return ERROR
+    if loadfile is None:
+        print_error("Missing LOADFILE")
+        return ERROR
+    if chessfile is None:
+        print_error("Missing CHESSFILE")
+        return ERROR
+    if savefile and mode != "train":
+        print_error("--save is only compatible with --train")
+        return ERROR
+    try:
+        nn = Parser_nn(loadfile)
+    except SystemExit:
+        return ERROR
+    if mode == "predict":
+        return predict_mode(nn, chessfile)
+    elif mode == "train":
+        return train_mode(nn, chessfile, savefile, loadfile)
+    return SUCCESS
+
+if __name__ == "__main__":
+    sys.exit(main())
